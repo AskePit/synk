@@ -4,6 +4,7 @@ from common import PC, ExternalDisc
 
 dirs: list[Path] = []
 registered: list[PC | ExternalDisc] = []
+available: list[PC | ExternalDisc] = []
 
 def load_config():
     config = configparser.ConfigParser()
@@ -74,6 +75,7 @@ def main():
     pc = find_this_pc()
     if pc:
         print(f'Registered PC found: {pc.serialize()}')
+        available.append(pc)
     else:
         print('This PC is not registered.')
 
@@ -82,6 +84,7 @@ def main():
         print('Registered external discs found:')
         for disc in discs:
             print(disc.serialize())
+            available.append(disc)
     else:
         print('No registered external discs found.')
     
