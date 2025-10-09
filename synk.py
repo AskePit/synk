@@ -1,6 +1,8 @@
 import configparser
+from pathlib import Path
 from common import PC, ExternalDisc
 
+dirs: list[Path] = []
 registered: list[PC | ExternalDisc] = []
 
 def load_config():
@@ -8,6 +10,14 @@ def load_config():
     config.read('config.ini')
     for section in config.sections():
         if section.startswith('PC.'):
+            '''
+            [PC.pc_name]
+            bios_serial = xxx
+            board_serial = xxx
+            system_uuid = xxx
+            cpu_id = xxx
+            letters = C D
+            '''
             name = section[3:]
             bios_serial = config[section].get('bios_serial', '')
             board_serial = config[section].get('board_serial', '')
@@ -17,11 +27,31 @@ def load_config():
             pc = PC(name=name, bios_serial=bios_serial, board_serial=board_serial, system_uuid=system_uuid, cpu_id=cpu_id, drive_letters=drive_letters)
             registered.append(pc)
         elif section.startswith('EXT.'):
+            '''
+            [EXT.name]
+            model = xxx
+            serial = xxxxxxxxx
+            '''
             name = section[4:]
             model = config[section].get('model', '')
             serial = config[section].get('serial', '')
             disc = ExternalDisc(name=name, model=model, serial=serial)
             registered.append(disc)
+        elif section == 'dirs':
+            '''
+            [dirs]
+            paths = 
+                folder1
+                folder3/subfolder2/subsubfolder
+                folder2/subfolder
+            '''
+            paths = config[section].get('paths', '')
+            for path_str in paths.split('\n'):
+                path_str = path_str.strip()
+                if not path_str:
+                    continue
+                path = Path(path_str)
+                dirs.append(path)
 
 def find_this_pc() -> PC | None:
     this_pc = PC.make_this_pc()
@@ -54,6 +84,8 @@ def main():
             print(disc.serialize())
     else:
         print('No registered external discs found.')
+    
+    print(dirs)
 
 if __name__ == "__main__":
     main()
