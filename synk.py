@@ -1,14 +1,59 @@
 import configparser
-import wmi
+from common import PC, ExternalDisc
 
-def main():
+registered: list[PC | ExternalDisc] = []
+
+def load_config():
     config = configparser.ConfigParser()
     config.read('config.ini')
     for section in config.sections():
-        print(f'[{section}]')
-        for key, value in config[section].items():
-            print(f'{key} = {value}')
-        print()
+        if section.startswith('PC.'):
+            name = section[3:]
+            bios_serial = config[section].get('bios_serial', '')
+            board_serial = config[section].get('board_serial', '')
+            system_uuid = config[section].get('system_uuid', '')
+            cpu_id = config[section].get('cpu_id', '')
+            drive_letters = [l.strip().upper() for l in config[section].get('letters', '').split(',') if l.strip()]
+            pc = PC(name=name, bios_serial=bios_serial, board_serial=board_serial, system_uuid=system_uuid, cpu_id=cpu_id, drive_letters=drive_letters)
+            registered.append(pc)
+        elif section.startswith('EXT.'):
+            name = section[4:]
+            model = config[section].get('model', '')
+            serial = config[section].get('serial', '')
+            disc = ExternalDisc(name=name, model=model, serial=serial)
+            registered.append(disc)
+
+def find_this_pc() -> PC | None:
+    this_pc = PC.make_this_pc()
+    for item in registered:
+        if isinstance(item, PC) and item.equals(this_pc):
+            return item
+    return None
+
+def find_all_external_discs() -> list[ExternalDisc]:
+    found_discs = []
+    for item in registered:
+        if isinstance(item, ExternalDisc):
+            letter = item.get_letter()
+            if letter:
+                found_discs.append(item)
+    return found_discs
+
+def main():
+    load_config()
+    pc = find_this_pc()
+    if pc:
+        print(f'Registered PC found: {pc.serialize()}')
+    else:
+        print('This PC is not registered.')
+
+    discs = find_all_external_discs()
+    if discs:
+        print('Registered external discs found:')
+        for disc in discs:
+            print(disc.serialize())
+    else:
+        print('No registered external discs found.')
 
 if __name__ == "__main__":
     main()
