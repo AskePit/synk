@@ -1,8 +1,16 @@
 import configparser
+import glob
 from dataclasses import dataclass, field
 from pathlib import Path
 from common import PC, ExternalDisc
+import pprint
 
+DEBUG = True
+def dprint(*args, **kwargs):
+    if DEBUG:
+        print(*args, **kwargs)
+
+@dataclass
 class AnalyzeLog:
     @dataclass
     class FileMetadata:
@@ -17,16 +25,29 @@ class AnalyzeLog:
 
     @dataclass
     class FilesDifferMessage:
-        files: list[FileMetadata] = field(default_factory=list)
+        files: list['FileMetadata'] = field(default_factory=list)
 
-    log : list[NoFileMessage | FilesDifferMessage] = field(default_factory=list)
+    files_diff_log : list[FilesDifferMessage] = field(default_factory=list)
+    structure_diff_log : list[NoFileMessage] = field(default_factory=list)
 
-    # TODO: Proper methods to add and merge messages
     def add_no_file_message(self, hasPaths: list[Path], noPaths: list[Path]):
-        self.log.append(self.NoFileMessage(hasPaths=hasPaths, noPaths=noPaths))
+        filtered_no_paths = []
+        existing_no_paths = set()
+        for msg in self.structure_diff_log:
+            if isinstance(msg, self.NoFileMessage):
+                existing_no_paths.update(msg.noPaths)
+
+        for np in noPaths:
+            if not any(np == ep or np.is_relative_to(ep) for ep in existing_no_paths):
+                filtered_no_paths.append(np)
+        noPaths = filtered_no_paths
+        if not noPaths:
+            return
+
+        self.structure_diff_log.append(self.NoFileMessage(hasPaths=hasPaths, noPaths=noPaths))
 
     def add_files_differ_message(self, files: list[FileMetadata]):
-        self.log.append(self.FilesDifferMessage(files=files))
+        self.files_diff_log.append(self.FilesDifferMessage(files=files))
 
 @dataclass
 class ConfigData:
@@ -40,26 +61,88 @@ class Data:
 
     def analyze_all_dirs(self) -> AnalyzeLog:
         log = AnalyzeLog()
-        for key in self.dirs.keys():
-            dir_log = self.analyze_dir(key)
-            if dir_log:
-                log.log.extend(dir_log.log)
+        for root in self.dirs.keys():
+            self._analyze_root_dir(root, log)
         return log
 
-    def analyze_dir(self, key: Path) -> AnalyzeLog:
-        if key not in self.dirs:
+    def _analyze_root_dir(self, root: Path, log: AnalyzeLog) -> AnalyzeLog:
+        if root not in self.dirs:
             return None
 
-        dirs = self.dirs[key]
+        dir_versions = self.dirs[root]
 
-        if len(dirs) < 2:
+        if len(dir_versions) < 2:
             return None
 
-        log = AnalyzeLog()
-        # TODO: Perform analysis and populate log
-        return log
+        visited: set[Path] = set()
+        self._analyze_dir_recursively(dir_versions, visited, log, root)
 
+    def _analyze_dir_recursively(self, dir_versions: list[Path], visited: set[Path], log: AnalyzeLog, root: Path):
+        dprint(f"Recursively analyzing directories: {dir_versions}")
 
+        for lead_dir in dir_versions:
+            if not lead_dir.exists() or not lead_dir.is_dir():
+                continue
+
+            dprint(f"Go hard: {lead_dir}")
+
+            root_path = Path(f'{lead_dir.drive}\\') / root
+
+            for f_str in glob.glob(f'{lead_dir}/*', recursive=False):
+                f = Path(f_str)
+                root_relpath = f.relative_to(root_path)
+                relpath = f.relative_to(lead_dir)
+
+                if root_relpath in visited:
+                    continue
+                visited.add(root_relpath)
+
+                sub_versions = [dv / relpath for dv in dir_versions]
+
+                # Analyze this file or directory
+                if f.is_dir():
+                    dprint(f"Analyzing directory: {f}")
+                    self._analyze_dir(sub_versions, log)
+                elif f.is_file():
+                    dprint(f"Analyzing file: {f}")
+                    self._analyze_file(sub_versions, log)
+
+                # If it's a directory, recurse into it
+                if f.is_dir():
+                    self._analyze_dir_recursively(sub_versions, visited, log, root)
+
+    def _analyze_dir(self, dir_versions: list[Path], log: AnalyzeLog):
+        for f in dir_versions:
+            if not f.exists():
+                hasPaths = [fv for fv in dir_versions if fv.exists()]
+                noPaths = [fv for fv in dir_versions if not fv.exists()]
+                log.add_no_file_message(hasPaths=hasPaths, noPaths=noPaths)
+
+    def _analyze_file(self, file_versions: list[Path], log: AnalyzeLog):
+        for f in file_versions:
+            if not f.exists():
+                hasPaths = [fv for fv in file_versions if fv.exists()]
+                noPaths = [fv for fv in file_versions if not fv.exists()]
+                log.add_no_file_message(hasPaths=hasPaths, noPaths=noPaths)
+
+        for lead_i, lead_file in enumerate(file_versions):
+            if not lead_file.exists():
+                continue
+            for compare_file in file_versions[lead_i + 1:]:
+                if not compare_file.exists():
+                    continue
+
+                size_1 = lead_file.stat().st_size
+                size_2 = compare_file.stat().st_size
+                mtime_1 = lead_file.stat().st_mtime
+                mtime_2 = compare_file.stat().st_mtime
+
+                if size_1 != size_2 or mtime_1 != mtime_2:
+                    log.add_files_differ_message(files=[
+                        AnalyzeLog.FileMetadata(path=lead_file, size=size_1, mtime=mtime_1),
+                        AnalyzeLog.FileMetadata(path=compare_file, size=size_2, mtime=mtime_2),
+                    ])
+    
 def load_config() -> ConfigData:
     data = ConfigData()
 
@@ -131,7 +214,6 @@ def find_dirs_for_letter(letter: str, dirs: list[Path]) -> dict[str, list[Path]]
     existing_dirs = {}
     for base_dir in dirs:
         full_path = Path(f'{letter}:\\') / base_dir
-        print(f'Checking {full_path}')
         if full_path.exists() and full_path.is_dir():
             if base_dir not in existing_dirs:
                 existing_dirs[base_dir] = []
@@ -162,7 +244,7 @@ def main():
 
     pc = find_this_pc(configData.devices)
     if pc:
-        print(f'Registered PC found: {pc.serialize()}')
+        #print(f'Registered PC found: {pc.serialize()}')
         availableData.devices.append(pc)
     else:
         print('This PC is not registered.')
@@ -170,11 +252,14 @@ def main():
 
     discs = find_all_external_discs(configData.devices)
     for disc in discs:
-        print(disc.serialize())
+        #print(disc.serialize())
         availableData.devices.append(disc)
 
     availableData.dirs = find_all_dirs(availableData.devices, configData.dirs)
-    print(availableData)
+    #print(availableData)
+
+    analised = availableData.analyze_all_dirs()
+    pprint.pprint(analised)
 
 if __name__ == "__main__":
     main()
