@@ -1,4 +1,5 @@
 import configparser
+import enum
 import glob
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,8 +11,19 @@ def dprint(*args, **kwargs):
     if DEBUG:
         print(*args, **kwargs)
 
+class StructuralInstruction(enum.Enum):
+    CREATE = 0
+    DELETE = 1
+
+class ActionType(enum.Enum):
+    COPY_FILE = 0
+    COPY_DIR = 1
+    DELETE_FILE = 2
+    DELETE_DIR = 3
+
 @dataclass
 class AnalyzeLog:
+
     @dataclass
     class FileMetadata:
         path: Path
@@ -22,10 +34,11 @@ class AnalyzeLog:
     class NoFileMessage:
         hasPaths: list[Path]
         noPaths: list[Path]
+        instruction: StructuralInstruction = StructuralInstruction.CREATE
 
     @dataclass
     class FilesDifferMessage:
-        files: list['FileMetadata'] = field(default_factory=list)
+        files: list['AnalyzeLog.FileMetadata'] = field(default_factory=list)
 
     files_diff_log : list[FilesDifferMessage] = field(default_factory=list)
     structure_diff_log : list[NoFileMessage] = field(default_factory=list)
@@ -48,6 +61,46 @@ class AnalyzeLog:
 
     def add_files_differ_message(self, files: list[FileMetadata]):
         self.files_diff_log.append(self.FilesDifferMessage(files=files))
+
+@dataclass
+class ActionsList:
+    @dataclass
+    class Action:
+        src: Path
+        dst: Path
+        type: ActionType
+        overwrite: bool = True
+
+    actions: list[Action] = field(default_factory=list)
+
+    @staticmethod
+    def make_from_analyze_log(log: AnalyzeLog):
+        actions = ActionsList()
+        for msg in log.structure_diff_log:
+            if msg.instruction == StructuralInstruction.CREATE:
+                for np in msg.noPaths:
+                    for hp in msg.hasPaths:
+                        if hp.is_dir():
+                            actions.actions.append(actions.Action(src=hp, dst=np, type=ActionType.COPY_DIR))
+                        elif hp.is_file():
+                            actions.actions.append(actions.Action(src=hp, dst=np, type=ActionType.COPY_FILE))
+            elif msg.instruction == StructuralInstruction.DELETE:
+                for hp in msg.hasPaths:
+                    # For delete instructions, remove the extra file/dir from the source location.
+                    if hp.is_dir():
+                        actions.actions.append(actions.Action(src=hp, dst=hp, type=ActionType.DELETE_DIR))
+                    elif hp.is_file():
+                        actions.actions.append(actions.Action(src=hp, dst=hp, type=ActionType.DELETE_FILE))
+
+        for msg in log.files_diff_log:
+            if len(msg.files) < 2:
+                continue
+
+            latest_file = max(msg.files, key=lambda f: f.mtime)
+            for f in msg.files:
+                if f != latest_file:
+                    actions.actions.append(actions.Action(src=latest_file.path, dst=f.path, type=ActionType.COPY_FILE, overwrite=True))
+        return actions
 
 @dataclass
 class ConfigData:
@@ -260,6 +313,9 @@ def main():
 
     analised = availableData.analyze_all_dirs()
     pprint.pprint(analised)
+
+    actions = ActionsList.make_from_analyze_log(analised)
+    pprint.pprint(actions)
 
 if __name__ == "__main__":
     main()
